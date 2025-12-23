@@ -648,6 +648,7 @@ humidifier_modules = [
             'LUH-A602S-WEU',
             'LUH-A602S-WJP',
             'LUH-A602S-WUSC',
+            'LUH-A603S-WUS',
         ],
         features=[HumidifierFeatures.WARM_MIST],
         mist_modes={
