@@ -960,34 +960,6 @@ class VeSyncLV600S(BypassV2Mixin, VeSyncHumidifier):
         self.state.connection_status = ConnectionStatus.ONLINE
         return True
 
-    async def toggle_automatic_stop(self, toggle: bool | None = None) -> bool:
-        if toggle is None:
-            toggle = self.state.automatic_stop_config is not True
-
-        payload_data = {'autoStopSwitch': int(toggle)}
-        r_dict = await self.call_bypassv2_api('setAutoStopSwitch', payload_data)
-        r = Helpers.process_dev_response(logger, 'toggle_automatic_stop', self, r_dict)
-        if r is None:
-            return False
-
-        self.state.automatic_stop_config = toggle
-        self.state.connection_status = ConnectionStatus.ONLINE
-        return True
-
-    async def toggle_display(self, toggle: bool | None = None) -> bool:
-        if toggle is None:
-            toggle = self.state.display_set_status != DeviceStatus.ON
-
-        payload_data = {'screenSwitch': int(toggle)}
-        r_dict = await self.call_bypassv2_api('setDisplay', payload_data)
-        r = Helpers.process_dev_response(logger, 'toggle_display', self, r_dict)
-        if r is None:
-            return False
-
-        self.state.display_set_status = DeviceStatus.from_bool(toggle)
-        self.state.connection_status = ConnectionStatus.ONLINE
-        return True
-
     async def set_humidity(self, humidity: int) -> bool:
         if not Validators.validate_range(humidity, *self.target_minmax):
             logger.warning(
@@ -1106,10 +1078,8 @@ class VeSyncLV600S(BypassV2Mixin, VeSyncHumidifier):
 
     async def clear_timer(self) -> bool:
         """Clear timer for humidifier using V2 API."""
-        if self.state.timer is None:
-            logger.debug('No timer to clear, run get_timer() first.')
-            return False
-        payload = {'id': self.state.timer.id}
+        timer_id = self.state.timer.id if self.state.timer else 1
+        payload = {'id': timer_id}
         r_dict = await self.call_bypassv2_api('delTimerV2', payload)
         r = Helpers.process_dev_response(logger, 'clear_timer', self, r_dict)
         if r is None:

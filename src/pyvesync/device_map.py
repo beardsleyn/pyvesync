@@ -666,7 +666,6 @@ humidifier_modules = [
         class_name='VeSyncLV600S',
         dev_types=[
             'LUH-A603S-WUS',
-            'LUH-A603S-WUV',
         ],
         features=[HumidifierFeatures.WARM_MIST],
         mist_modes={
