@@ -16,6 +16,8 @@ from pyvesync.models.humidifier_models import (
     InnerHumidifierBaseResult,
     Levoit1000SResult,
     LV600SResult,
+    Schedule,
+    SchedulesResult,
     Superior6000SResult,
 )
 from pyvesync.utils.device_mixins import BypassV2Mixin, process_bypassv2_result
@@ -895,6 +897,8 @@ class VeSyncLV600S(BypassV2Mixin, VeSyncHumidifier):
         warm_mist_levels (list): List of warm mist levels.
     """
 
+    __slots__ = ()
+
     def __init__(
         self,
         details: ResponseDeviceDetailsModel,
@@ -1056,8 +1060,13 @@ class VeSyncLV600S(BypassV2Mixin, VeSyncHumidifier):
             logger.warning('Warm mist level must be one of %s', self.warm_mist_levels)
             return False
 
-        payload_data = {'warmLevel': level, 'warmPower': level > 0}
-        r_dict = await self.call_bypassv2_api('setWarmLevel', payload_data)
+        payload_data = {
+            'levelIdx': 0,
+            'levelType': 'warm',
+            'mistLevel': 0,
+            'warmLevel': level,
+        }
+        r_dict = await self.call_bypassv2_api('setLevel', payload_data)
         r = Helpers.process_dev_response(logger, 'set_warm_level', self, r_dict)
         if r is None:
             return False
@@ -1066,3 +1075,177 @@ class VeSyncLV600S(BypassV2Mixin, VeSyncHumidifier):
         self.state.warm_mist_enabled = level > 0
         self.state.connection_status = ConnectionStatus.ONLINE
         return True
+
+    async def get_timer(self) -> Timer | None:
+        """Get timer for humidifier using V2 API."""
+        r_dict = await self.call_bypassv2_api('getTimerV2', {})
+        r = Helpers.process_dev_response(logger, 'get_timer', self, r_dict)
+        if r is None:
+            return None
+        # Parse the V2 timer response
+        try:
+            inner = r_dict['result']['result']
+            if not inner.get('timers'):
+                logger.debug('No timers found')
+                return None
+            timer_data = inner['timers'][0]
+            action_val = 'off'
+            if timer_data.get('startAct'):
+                act = timer_data['startAct'][0].get('act', 0)
+                action_val = 'on' if act == 1 else 'off'
+            self.state.timer = Timer(
+                timer_duration=timer_data.get('total', 0),
+                action=action_val,
+                id=timer_data.get('id', 1),
+                remaining=timer_data.get('remain', 0),
+            )
+            return self.state.timer
+        except (KeyError, IndexError, TypeError) as e:
+            logger.debug('Error parsing timer response: %s', e)
+            return None
+
+    async def clear_timer(self) -> bool:
+        """Clear timer for humidifier using V2 API."""
+        if self.state.timer is None:
+            logger.debug('No timer to clear, run get_timer() first.')
+            return False
+        payload = {'id': self.state.timer.id}
+        r_dict = await self.call_bypassv2_api('delTimerV2', payload)
+        r = Helpers.process_dev_response(logger, 'clear_timer', self, r_dict)
+        if r is None:
+            return False
+        self.state.timer = None
+        return True
+
+    async def set_timer(self, duration: int, action: str | None = None) -> bool:
+        """Set timer for humidifier using V2 API.
+
+        Args:
+            duration: Timer duration in seconds.
+            action: Action when timer expires ('on' or 'off'). Defaults to off.
+        """
+        # Determine action: 0 = off, 1 = on
+        if action is None:
+            act_val = 0 if self.state.device_status == DeviceStatus.ON else 1
+        else:
+            act_val = 1 if action.lower() == 'on' else 0
+
+        payload_data = {
+            'startAct': [
+                {'type': 'powerSwitch', 'num': 0, 'act': act_val}
+            ],
+            'total': duration,
+        }
+        r_dict = await self.call_bypassv2_api('addTimerV2', payload_data)
+        r = Helpers.process_dev_response(logger, 'set_timer', self, r_dict)
+        if r is None:
+            return False
+
+        # Try to get the timer ID from response
+        timer_id = 1
+        try:
+            timer_id = r_dict['result']['result'].get('id', 1)
+        except (KeyError, TypeError):
+            pass
+
+        self.state.timer = Timer(
+            timer_duration=duration,
+            action='on' if act_val == 1 else 'off',
+            id=timer_id,
+            remaining=duration,
+        )
+        return True
+
+    async def get_schedules(self) -> list[Schedule] | None:
+        """Get schedules for humidifier.
+
+        Returns:
+            list[Schedule]: List of Schedule objects, or None on error.
+        """
+        payload_data = {'index': 0}
+        r_dict = await self.call_bypassv2_api('getSchedulesV3', payload_data)
+        r = Helpers.process_dev_response(logger, 'get_schedules', self, r_dict)
+        if r is None:
+            return None
+        try:
+            inner = r_dict['result']['result']
+            result = SchedulesResult.from_dict(inner)
+            return result.schedules
+        except (KeyError, TypeError, Exception) as e:
+            logger.debug('Error parsing schedules response: %s', e)
+            return None
+
+    async def add_schedule(
+        self,
+        hour: int,
+        minute: int,
+        power_on: bool = True,
+        mode: str = 'manual',
+        mist_level: int = 1,
+        warm_on: bool = False,
+        warm_level: int = 0,
+        screen_on: bool = True,
+        repeat: int = 0,
+        enabled: bool = True,
+    ) -> bool:
+        """Add a schedule for humidifier.
+
+        Args:
+            hour: Hour (0-23).
+            minute: Minute (0-59).
+            power_on: Turn power on (True) or off (False).
+            mode: Mode ('manual', 'sleep', 'humidity').
+            mist_level: Mist level (1-9).
+            warm_on: Enable warm mist.
+            warm_level: Warm mist level (0-3).
+            screen_on: Turn screen on.
+            repeat: Repeat bitmask (0=once, 254=daily, or custom bitmask).
+            enabled: Whether schedule is enabled.
+
+        Returns:
+            bool: True if successful.
+        """
+        clk_sec = hour * 3600 + minute * 60
+
+        start_act = [
+            {'type': 'powerSwitch', 'num': 0, 'act': 1 if power_on else 0},
+            {
+                'type': 'workMode',
+                'num': 0,
+                'act': mode,
+                'params': {'mistLevel': mist_level},
+            },
+            {
+                'type': 'warm',
+                'num': 0,
+                'act': 'on' if warm_on else 'off',
+                'params': {'level': warm_level},
+            },
+            {'type': 'screenSwitch', 'num': 0, 'act': 1 if screen_on else 0},
+        ]
+
+        payload_data = {
+            'enabled': enabled,
+            'repeat': repeat,
+            'startAct': start_act,
+            'tmgEvt': {'clkSec': clk_sec},
+            'type': 0,
+        }
+
+        r_dict = await self.call_bypassv2_api('addScheduleV3', payload_data)
+        r = Helpers.process_dev_response(logger, 'add_schedule', self, r_dict)
+        return r is not None
+
+    async def delete_schedule(self, schedule_id: int) -> bool:
+        """Delete a schedule.
+
+        Args:
+            schedule_id: The schedule ID to delete.
+
+        Returns:
+            bool: True if successful.
+        """
+        payload_data = {'id': schedule_id}
+        r_dict = await self.call_bypassv2_api('delScheduleV3', payload_data)
+        r = Helpers.process_dev_response(logger, 'delete_schedule', self, r_dict)
+        return r is not None

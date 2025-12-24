@@ -670,7 +670,7 @@ humidifier_modules = [
         ],
         features=[HumidifierFeatures.WARM_MIST],
         mist_modes={
-            HumidifierModes.AUTO: 'auto',
+            HumidifierModes.AUTO: 'humidity',
             HumidifierModes.SLEEP: 'sleep',
             HumidifierModes.MANUAL: 'manual',
         },

@@ -9,8 +9,8 @@ result models. The correct subclass is determined by the mashumaro discriminator
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Annotated
+from dataclasses import dataclass, field
+from typing import Annotated, Any
 
 from mashumaro.config import BaseConfig
 from mashumaro.types import Alias
@@ -237,3 +237,150 @@ class LV600SResult(InnerHumidifierBaseResult):
     totalWorkTime: int = 0
     warmPower: bool = False
     warmLevel: int = 0
+
+
+# Schedule Models for V3 Schedule API
+
+
+@dataclass
+class ScheduleActionParams(ResponseBaseModel):
+    """Parameters for a schedule action."""
+
+    mistLevel: int | None = None
+    level: int | None = None
+
+
+@dataclass
+class ScheduleAction(ResponseBaseModel):
+    """A single action within a schedule.
+
+    Attributes:
+        type: Action type ('powerSwitch', 'workMode', 'screenSwitch', 'warm').
+        num: Action index (usually 0).
+        act: Action value - int for switches (0/1), str for modes ('on'/'off'/'manual').
+        params: Optional parameters like mistLevel or warm level.
+    """
+
+    type: str
+    num: int
+    act: int | str
+    params: ScheduleActionParams | None = None
+
+    @property
+    def act_str(self) -> str:
+        """Get action as human-readable string."""
+        if isinstance(self.act, int):
+            return 'on' if self.act == 1 else 'off'
+        return str(self.act)
+
+
+@dataclass
+class ScheduleTimingEvent(ResponseBaseModel):
+    """Timing event for a schedule."""
+
+    clkSec: int  # Seconds from midnight
+
+
+@dataclass
+class Schedule(ResponseBaseModel):
+    """A humidifier schedule.
+
+    Attributes:
+        id: Unique schedule ID.
+        enabled: Whether schedule is active.
+        type: Schedule type (0 for standard).
+        repeat: Day bitmask (0=once, 2=Mon, 4=Tue, 8=Wed, 16=Thu, 32=Fri, 64=Sat, 128=Sun).
+        tmgEvt: Timing event with time in seconds from midnight.
+        startAct: List of actions to perform.
+    """
+
+    id: int
+    enabled: bool
+    type: int
+    repeat: int
+    tmgEvt: ScheduleTimingEvent
+    startAct: list[ScheduleAction] = field(default_factory=list)
+
+    @property
+    def hour(self) -> int:
+        """Get hour from clkSec."""
+        return self.tmgEvt.clkSec // 3600
+
+    @property
+    def minute(self) -> int:
+        """Get minute from clkSec."""
+        return (self.tmgEvt.clkSec % 3600) // 60
+
+    @property
+    def time_str(self) -> str:
+        """Get formatted time string HH:MM."""
+        return f"{self.hour:02d}:{self.minute:02d}"
+
+    @property
+    def days_str(self) -> str:
+        """Get human-readable days string."""
+        if self.repeat == 0:
+            return "once"
+        if self.repeat == 254:
+            return "daily"
+        days = []
+        day_names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+        for i, name in enumerate(day_names):
+            if self.repeat & (1 << (i + 1)):
+                days.append(name)
+        return ','.join(days) if days else "once"
+
+    def _get_action(self, action_type: str) -> ScheduleAction | None:
+        """Get action by type."""
+        for act in self.startAct:
+            if act.type == action_type:
+                return act
+        return None
+
+    @property
+    def power(self) -> str:
+        """Get power action as 'on' or 'off'."""
+        act = self._get_action('powerSwitch')
+        return act.act_str if act else 'unknown'
+
+    @property
+    def mode(self) -> str:
+        """Get work mode."""
+        act = self._get_action('workMode')
+        return act.act_str if act else 'unknown'
+
+    @property
+    def mist_level(self) -> int | None:
+        """Get mist level from workMode action."""
+        act = self._get_action('workMode')
+        if act and act.params:
+            return act.params.mistLevel
+        return None
+
+    @property
+    def warm(self) -> str:
+        """Get warm mist action as 'on' or 'off'."""
+        act = self._get_action('warm')
+        return act.act_str if act else 'off'
+
+    @property
+    def warm_level(self) -> int | None:
+        """Get warm mist level."""
+        act = self._get_action('warm')
+        if act and act.params:
+            return act.params.level
+        return None
+
+    @property
+    def screen(self) -> str:
+        """Get screen action as 'on' or 'off'."""
+        act = self._get_action('screenSwitch')
+        return act.act_str if act else 'unknown'
+
+
+@dataclass
+class SchedulesResult(ResponseBaseModel):
+    """Result from getSchedulesV3 API call."""
+
+    total: int
+    schedules: list[Schedule] = field(default_factory=list)
